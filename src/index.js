@@ -7,7 +7,7 @@ dotenv.config({
     path: './env'
 })
 
-console.log("MONGODB_URI:", process.env.MONGODB_URI ? "Exists" : "Missing");
+// console.log("MONGODB_URI:", process.env.MONGODB_URI ? "Exists" : "Missing");
 
 connectDB()
 .then(() => {
