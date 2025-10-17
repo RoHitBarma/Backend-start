@@ -1,5 +1,7 @@
 import { v2 as cloudinary } from "cloudinary";
 import fs from "fs"
+import { ApiError } from "./ApiError";
+import { match } from "assert";
 
 
 
@@ -22,15 +24,42 @@ const uploadOnCloudinary = async (localFilePath) => {
         console.log("File uploaded successfully on cloudinary.", response.url)
         fs.unlinkSync(localFilePath)
         console.log("Response: ", response)
-        return response
+        return response;
     } catch (error) {
         fs.unlink(localFilePath) // remove the locally saved temporary file as the upload opreation got failed.
         return null
     }
 }
 
+const deleteFromCloudinary = async (localFilePath) => {
+    try{
+        if(!localFilePath){
+            throw new ApiError(400, "Local File is missing")
+        }
+        const response = await cloudinary.uploader.destroy(localFilePath, {
+            resource_type: "auto"
+        })
 
-export {uploadOnCloudinary}
+        console.log("File deleted successfully from cloudinary.", response.url)
+        return response;
+    } catch (error) {
+        console.error("Error deleting from Cloudinary:", error);
+        throw new ApiError(500, "Failed to delete file from Cloudinary");
+    }
+}
+
+const extractPublicIdFromUrl = (url) => {
+    try{
+        const matches = url.match(/\/upload\/(?:v\d+\/)?([^\.]+)/)
+        return matches ? matches[1] : null;
+    }catch (error){
+        console.error("Error extracting public ID:", error)
+        return null
+    }
+}
+
+
+export {uploadOnCloudinary, deleteFromCloudinary, extractPublicIdFromUrl}
 
 
 /** 

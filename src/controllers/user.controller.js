@@ -1,10 +1,11 @@
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js"
 import { User } from "../models/user.models.js"
-import { uploadOnCloudinary } from "../utils/cloudinary.js"
+import { uploadOnCloudinary, deleteFromCloudinary, extractPublicIdFromUrl } from "../utils/cloudinary.js"
 import { apiResponse } from "../utils/apiResponse.js";
 import jwt from "jsonwebtoken"
 import { emit, send } from "process";
+import mongoose from "mongoose";
 
 
 const generateAccessAndRefreshToken = async (userId) => {
@@ -281,26 +282,46 @@ const updateUserAvatar = asyncHandler(async(req, res) => {
         throw new ApiError(400, "Avatar file is missing")
     }
 
-    const avatar = await uploadOnCloudinary(avatarLocalPath)
+    const user = await User.findById(req.user?._id)
 
-    if(!avatar.url){
+    if (!user) {
+        throw new ApiError(404, "User not found")
+    }
+
+    const oldAvatarUrl = user.avatar
+
+    const newAvatar = await uploadOnCloudinary(avatarLocalPath)
+
+    if(!newAvatar.url){
         throw new ApiError(400, "Error while avatar uploading on cloudnery")
     }
 
-    const user = await User.findByIdAndUpdate(
+    const updatedUser = await User.findByIdAndUpdate(
         req.user?._id,
         {
             $set: {
-                avatar: avatar.url
+                avatar: newAvatar.url
             }
         },
         {new: true}      
     ).select("-password")
 
+    if(oldAvatarUrl){
+        try{
+            const publicId = extractPublicIdFromUrl(oldAvatarUrl)
+            if(publicId){
+                await deleteFromCloudinary(publicId)
+                console.log("Old avatar deleted successfully:", publicId)
+            }
+        } catch (error) {
+            console.error("Error deleting old avatar:", error)
+        }
+    }
+
     return res
     .status(200)
     .json(
-        new apiResponse(200, user, "Avatar is updated successfully.")
+        new apiResponse(200, updatedUser, "Avatar is updated successfully.")
     )
 })
 
@@ -311,13 +332,21 @@ const updateUserCoverImgge = asyncHandler(async(req, res) => {
         throw new ApiError(400, "Cover image file is missing")
     }
 
+    const user = await User.findById(req.user?._id)
+
+    if(!user){
+        throw new ApiError(404, "User not found")
+    }
+
+    const oldCoverImage = user.coverImage
+
     const coverImage = await uploadOnCloudinary(coverImageLocalPath)
 
     if(!coverImage.url){
-        throw new ApiError(400, "Error while avatar uploading on cloudnery")
+        throw new ApiError(400, "Error while cover image uploading on cloudnery")
     }
 
-    const user = await User.findByIdAndUpdate(
+    const updatedUser = await User.findByIdAndUpdate(
         req.user?._id,
         {
             $set: {
@@ -327,10 +356,146 @@ const updateUserCoverImgge = asyncHandler(async(req, res) => {
         {new: true} 
     ).select("-password")
 
+    if(oldCoverImage){
+        try{
+            const publicId = extractPublicIdFromUrl(oldCoverImage)
+            if(publicId){
+                await deleteFromCloudinary(publicId)
+                console.log("Old cover image deleted successfully:", publicId)
+            }
+        }catch (error) {
+            console.log("Error deleting old cover image:", error)    
+        }
+    }
+
     return res
     .status(200)
     .json(
-        new apiResponse(200,user, "Cover Image is updated successfully.")
+        new apiResponse(200,updatedUser, "Cover Image is updated successfully.")
+    )
+})
+
+const getUserChannelProfile = asyncHandler(async(req, res) => {
+    const {username} = req.parems
+
+
+    if(!username?.trim()){
+        throw new ApiError(400, "Username not available.")
+    }
+
+    const channel = await User.aggregate([
+        {
+            $match: {
+                username: username?.toLowerCase()
+            }
+        },
+        {
+            $lookup: {
+                from: "subscriptions",
+                localField: "_id",
+                foreignField: "channel",
+                as: "Subcribers"
+            }
+        },
+        {
+            $lookup: {
+                from: "subscriptions",
+                localField: "_id",
+                foreignField: "subscriber",
+                as: "subscribedTo"
+            }
+        },
+        {
+            $addFields: {
+                subscriberCount: {
+                    $size: "$subscribers"
+                },
+                channelSubscribedToCount: {
+                    $size: "$subscribedTo"
+                },
+                isSubcribed: {
+                    $cond: {
+                        if: {
+                            $in: [req.user?._id, "$subscribers.subscriber"]
+                        },
+                        then: true,
+                        else: false
+                    }
+                }
+            }
+        },
+        {
+            $project: {
+                fullname: 1,
+                username: 1,
+                subscriberCount: 1,
+                channelSubscribedToCount: 1,
+                isSubcribed: 1,
+                avatar: 1,
+                coverImage: 1,
+                email: 1
+            }
+        }
+    ])
+
+    if(!channel?.length){
+        throw new ApiError(400, "Channel does not exists.")
+    }
+
+    return res
+    .status(200)
+    .json(
+        new apiResponse(200, channel[0], "user channel fetched successfully")
+    )
+})
+
+const getWatchHistory = asyncHandler(async(req, res) => {
+    const user = await User.aggregate([
+        {
+            $match: {
+                _id: new mongoose.Types.ObjectId(req.user._id)
+            }
+        },
+        {
+            $lookup: {
+                from: "videos",
+                localField: "watchHistory",
+                foreignField: "_id",
+                as: "watchHistory",
+                pipeline: [
+                    {
+                        $lookup: {
+                            from: "users",
+                            localField: "owner",
+                            foreignField: "_id",
+                            as: "owner",
+                            pipeline: [
+                                {
+                                    $project: {
+                                        username: 1,
+                                        fullname: 1,
+                                        avatar: 1
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        $addFields: {
+                            owner: {
+                                $first: "$owner"
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    ])
+
+    return res
+    .status(200)
+    .json( 
+        new apiResponse(200, user[0].watchHistory, "Watch History fetched successfully.")
     )
 })
 
@@ -343,5 +508,7 @@ export {
     getCurrentUser,
     updateUserDetails,
     updateUserAvatar,
-    updateUserCoverImgge
+    updateUserCoverImgge,
+    getUserChannelProfile,
+    getWatchHistory
 }
